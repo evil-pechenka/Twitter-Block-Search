@@ -1,6 +1,17 @@
 // Twitter Block Search - Оптимизированная версия
 // Добавляет кнопку поиска двусторонней переписки с заблокировавшим пользователем
 
+// Флаг подробного логирования
+const TBS_DEBUG = true;
+
+function tbsLog(...args) {
+  if (TBS_DEBUG) console.log('Twitter Block Search:', ...args);
+}
+
+function tbsWarn(...args) {
+  if (TBS_DEBUG) console.warn('Twitter Block Search:', ...args);
+}
+
 // Получить SVG иконку лупы
 function getSearchIcon() {
   return `
@@ -10,12 +21,20 @@ function getSearchIcon() {
   `;
 }
 
+function createStatusDot() {
+  const dot = document.createElement('span');
+  dot.className = 'twitter-block-search-status hidden';
+  dot.title = 'Проверка результатов поиска...';
+  return dot;
+}
+
 
 
 // Функция для добавления кнопки поиска
 async function addSearchButton() {
   // Проверяем, есть ли уже кнопка на странице
   if (document.querySelector('.twitter-block-search-btn')) {
+    tbsLog('Button already exists, skipping add');
     return;
   }
   
@@ -34,6 +53,7 @@ async function addSearchButton() {
         const match = text.match(/@(\w+)\s+has blocked you/);
         
         if (match) {
+          tbsLog('Found blocked text in element', { selector, text });
           targetElement = element;
           break;
         }
@@ -52,7 +72,7 @@ async function addSearchButton() {
       const currentUser = getCurrentUsername();
       
       if (!currentUser) {
-        console.warn('Twitter Block Search: Cannot determine current user, skipping button');
+        tbsWarn('Cannot determine current user, skipping button');
         return;
       }
       
@@ -67,17 +87,23 @@ async function addSearchButton() {
       searchButton.addEventListener('click', handleSearchClick);
       
       // Добавляем кнопку сразу
+      const statusDot = createStatusDot();
+
       targetElement.style.display = 'inline-flex';
       targetElement.style.alignItems = 'center';
       targetElement.style.gap = '8px';
       targetElement.appendChild(searchButton);
+      targetElement.appendChild(statusDot);
       
       // Просто показываем лупу - проверка результатов поиска технически невозможна
       searchButton.className = 'twitter-block-search-btn';
       searchButton.disabled = false;
       searchButton.innerHTML = getSearchIcon();
       searchButton.title = `Найти переписку между @${currentUser} и @${blockedUsername}`;
-      console.log('Twitter Block Search: Search button added for @' + blockedUsername);
+      tbsLog('Search button added for @' + blockedUsername);
+
+      // Фоновая проверка: есть ли результаты поиска
+      checkSearchResults(currentUser, blockedUsername, statusDot);
     }
   }
 }
@@ -108,14 +134,11 @@ function handleSearchClick(e) {
     return;
   }
   
-  // Формируем двусторонний поисковый запрос
-  const searchQuery = `(from:${currentUser} to:${blockedUsername}) OR (from:${blockedUsername} to:${currentUser})`;
-  const searchUrl = `https://x.com/search?q=${encodeURIComponent(searchQuery)}&src=typed_query&f=live`;
+  const searchUrl = buildSearchUrl(currentUser, blockedUsername);
   
-  console.log('Twitter Block Search:', {
+  tbsLog('Opening search', {
     currentUser,
     blockedUser: blockedUsername,
-    searchQuery,
     searchUrl
   });
   
@@ -128,11 +151,79 @@ function handleSearchClick(e) {
   }
 }
 
+function buildSearchUrl(currentUser, blockedUsername) {
+  const searchQuery = `(from:${currentUser} to:${blockedUsername}) OR (from:${blockedUsername} to:${currentUser})`;
+  return `https://x.com/search?q=${encodeURIComponent(searchQuery)}&src=typed_query&f=live`;
+}
+
+function checkSearchResults(currentUser, blockedUsername, statusDot) {
+  if (!statusDot) return;
+
+  statusDot.classList.remove('hidden', 'status-red', 'status-green');
+  statusDot.classList.add('status-pending');
+  statusDot.classList.add('hidden');
+
+  const searchUrl = buildSearchUrl(currentUser, blockedUsername);
+  const requestId = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+  const button = statusDot.parentElement?.querySelector('.twitter-block-search-btn');
+  if (button) {
+    button.classList.add('checking');
+  }
+
+  tbsLog('Starting background check', { currentUser, blockedUsername, searchUrl, requestId });
+
+  chrome.runtime.sendMessage(
+    { type: 'TBS_CHECK_SEARCH', searchUrl, requestId },
+    (response) => {
+      statusDot.classList.remove('status-pending');
+      if (button) {
+        button.classList.remove('checking');
+      }
+
+      if (!response || !response.ok || response.requestId !== requestId) {
+        tbsWarn('Background check failed', response);
+        statusDot.classList.add('hidden');
+        return;
+      }
+
+      tbsLog('Background check response', response);
+
+      if (response.status === 'no_results' || (response.hasNoResults && !response.hasResults)) {
+        statusDot.classList.add('hidden');
+        statusDot.title = 'Ничего не найдено';
+
+        if (button) {
+          button.classList.add('no-results');
+          button.innerHTML = '<span class="tbs-clown">🤡</span>';
+          button.title = 'Ничего не найдено';
+        }
+        return;
+      }
+
+      if (response.status === 'results' || response.hasResults) {
+        statusDot.classList.add('hidden');
+        statusDot.title = 'Найдены результаты';
+
+        if (button) {
+          button.classList.remove('no-results');
+          button.innerHTML = getSearchIcon();
+          button.title = button.title || 'Открыть поиск';
+        }
+        return;
+      }
+
+      statusDot.classList.add('hidden');
+    }
+  );
+}
+
 // Функция для получения текущего имени пользователя с кэшированием
 function getCurrentUsername() {
   // Проверяем кэш (5 минут)
   if (getCurrentUsername._cache && getCurrentUsername._cacheTime && 
       Date.now() - getCurrentUsername._cacheTime < 300000) {
+    tbsLog('Using cached username', getCurrentUsername._cache);
     return getCurrentUsername._cache;
   }
   
@@ -158,6 +249,7 @@ function getCurrentUsername() {
       // Кэшируем результат
       getCurrentUsername._cache = username;
       getCurrentUsername._cacheTime = Date.now();
+      tbsLog('Username found (priority selector)', { selector, username });
       return username;
     }
   }
@@ -175,10 +267,12 @@ function getCurrentUsername() {
     if (username) {
       getCurrentUsername._cache = username;
       getCurrentUsername._cacheTime = Date.now();
+      tbsLog('Username found (fallback selector)', { selector, username });
       return username;
     }
   }
-  
+
+  tbsWarn('Username not found');
   return null;
 }
 
@@ -262,6 +356,7 @@ function observeDOM() {
     });
     
     if (hasRelevantChanges) {
+      tbsLog('Relevant DOM changes detected, scheduling addSearchButton');
       debouncedAddButton();
     }
   });
@@ -282,7 +377,7 @@ let domObserver = null;
 
 // Инициализация расширения
 async function init() {
-  console.log('Twitter Block Search: Initializing...');
+  tbsLog('Initializing...');
   
   // Останавливаем предыдущий наблюдатель, если есть
   if (domObserver) {
@@ -295,7 +390,7 @@ async function init() {
   // Начинаем наблюдение за изменениями DOM
   domObserver = observeDOM();
   
-  console.log('Twitter Block Search: Initialized successfully');
+  tbsLog('Initialized successfully');
 }
 
 // Очистка ресурсов
@@ -304,7 +399,7 @@ function cleanup() {
     domObserver.disconnect();
     domObserver = null;
   }
-  console.log('Twitter Block Search: Cleaned up');
+  tbsLog('Cleaned up');
 }
 
 // Валидация никнейма Twitter (1-15 символов, буквы, цифры, подчеркивания)
@@ -328,7 +423,7 @@ function setupNavigationHandler() {
   setInterval(() => {
     if (window.location.href !== currentUrl) {
       currentUrl = window.location.href;
-      console.log('Twitter Block Search: URL changed, clearing cache');
+      tbsLog('URL changed, clearing cache');
       
       // Очищаем кэш никнейма
       if (getCurrentUsername._cache) {

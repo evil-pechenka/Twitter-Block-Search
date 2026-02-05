@@ -34,6 +34,27 @@
   transition: transform 0.2s ease;
 }
 
+.twitter-block-search-btn .tbs-clown {
+  font-size: 24px;
+  line-height: 1;
+}
+
+.twitter-block-search-btn.no-results {
+  background: transparent;
+  box-shadow: none;
+  width: auto;
+  height: auto;
+  padding: 0;
+  margin-left: 4px;
+}
+
+.twitter-block-search-btn.no-results:hover,
+.twitter-block-search-btn.no-results:active {
+  background: transparent;
+  transform: none;
+  box-shadow: none;
+}
+
 .twitter-block-search-btn:hover svg {
   transform: scale(1.1);
 }
@@ -89,6 +110,19 @@
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.6; }
+}
+
+.twitter-block-search-btn.checking {
+  animation: fadePulse 1.2s ease-in-out infinite;
+}
+
+@keyframes fadePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.twitter-block-search-status {
+  display: none;
 }
 
  
