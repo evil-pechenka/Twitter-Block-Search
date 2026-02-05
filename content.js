@@ -82,6 +82,8 @@ async function addSearchButton() {
       searchButton.innerHTML = `<span style="font-size: 12px;">⏳</span>`;
       searchButton.title = 'Проверяем наличие переписки...';
       searchButton.disabled = true;
+      searchButton.dataset.blockedUsername = blockedUsername;
+      searchButton.dataset.currentUsername = currentUser;
       
       // ВАЖНО: Добавляем обработчик клика сразу, чтобы он работал всегда
       searchButton.addEventListener('click', handleSearchClick);
@@ -113,13 +115,16 @@ function handleSearchClick(e) {
   e.preventDefault();
   e.stopPropagation();
   
-  // Извлекаем имя заблокированного пользователя из title кнопки
-  const title = e.currentTarget.title;
-  const match = title.match(/@(\w+)$/);
-  if (!match) return;
+  const button = e.currentTarget;
+  const blockedUsername = button.dataset.blockedUsername;
+  const cachedCurrentUser = button.dataset.currentUsername;
+  const currentUser = cachedCurrentUser || getCurrentUsername();
   
-  const blockedUsername = match[1];
-  const currentUser = getCurrentUsername();
+  if (!blockedUsername) {
+    console.error('Twitter Block Search: Не удалось определить пользователя из data-атрибутов');
+    showUserFriendlyError('Не удалось определить пользователя. Попробуйте обновить страницу.');
+    return;
+  }
   
   if (!currentUser) {
     console.error('Twitter Block Search: Не удалось определить имя пользователя');
