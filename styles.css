@@ -125,4 +125,13 @@
   display: none;
 }
 
- 
+.twitter-block-search-anchor {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 8px;
+  vertical-align: baseline;
+}
+
+.twitter-block-search-anchor .twitter-block-search-btn {
+  margin-left: 0;
+}

@@ -28,6 +28,102 @@ function createStatusDot() {
   return dot;
 }
 
+const BLOCK_MESSAGE_PATTERNS = [
+  /@([a-zA-Z0-9_]{1,15})\s+has blocked you/i,
+  /пользователь\s+@([a-zA-Z0-9_]{1,15})\s+заблокировал вас/i,
+  /@([a-zA-Z0-9_]{1,15}).{0,120}(?:has blocked you|заблокировал вас)/i
+];
+
+function extractMentionUsername(text) {
+  if (!text || typeof text !== 'string') return null;
+  const match = text.match(/@([a-zA-Z0-9_]{1,15})/);
+  return match ? match[1] : null;
+}
+
+function getProfileUsernameFromPath() {
+  const segments = window.location.pathname.split('/').filter(Boolean);
+  if (segments.length === 0) return null;
+  const candidate = segments[0];
+  return isValidUsername(candidate) && !isSystemPage(candidate) ? candidate : null;
+}
+
+function parseBlockedUsername(text) {
+  if (!text || typeof text !== 'string') return null;
+  const normalized = text.trim().replace(/\s+/g, ' ');
+
+  for (const pattern of BLOCK_MESSAGE_PATTERNS) {
+    const match = normalized.match(pattern);
+    if (match && match[1]) {
+      return match[1];
+    }
+  }
+
+  return null;
+}
+
+function findBlockMessageTarget() {
+  const selectors = [
+    '[data-testid="inlinePrompt"] h1 > span',
+    '[data-testid="inlinePrompt"] h1 span',
+    '[data-testid="inlinePrompt"] h1',
+    '[data-testid="inlinePrompt"]',
+    'h1',
+    'h2',
+    'h3',
+    'span',
+    'div'
+  ];
+
+  for (const selector of selectors) {
+    const elements = document.querySelectorAll(selector);
+    for (const element of elements) {
+      if (
+        !element.textContent ||
+        element.offsetParent === null ||
+        element.querySelector('.twitter-block-search-btn')
+      ) {
+        continue;
+      }
+
+      const blockedUsername = parseBlockedUsername(element.textContent);
+      if (blockedUsername) {
+        tbsLog('Found blocked text in element', { selector, blockedUsername });
+        return { targetElement: element, blockedUsername };
+      }
+
+      // Языконезависимый fallback: в inlinePrompt берем @username и сверяем с URL профиля
+      if (element.closest('[data-testid="inlinePrompt"]')) {
+        const mentionUsername = extractMentionUsername(element.textContent);
+        const profileUsername = getProfileUsernameFromPath();
+        if (
+          mentionUsername &&
+          profileUsername &&
+          mentionUsername.toLowerCase() === profileUsername.toLowerCase()
+        ) {
+          tbsLog('Found block target by inlinePrompt fallback', {
+            selector,
+            mentionUsername,
+            profileUsername
+          });
+          return { targetElement: element, blockedUsername: mentionUsername };
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+function hasBlockMessageMarker(text) {
+  if (!text || typeof text !== 'string') return false;
+  const normalized = text.toLowerCase();
+  return (
+    normalized.includes('has blocked you') ||
+    normalized.includes('заблокировал вас') ||
+    normalized.includes('пользователь @')
+  );
+}
+
 
 
 // Функция для добавления кнопки поиска
@@ -38,75 +134,47 @@ async function addSearchButton() {
     return;
   }
   
-  // Ищем элементы в порядке приоритета
-  const selectors = ['h1', 'h2', 'h3', 'span', 'div'];
-  let targetElement = null;
-  
-  for (const selector of selectors) {
-    const elements = document.querySelectorAll(selector);
-    for (const element of elements) {
-      if (element.textContent && 
-          element.offsetParent !== null && // элемент видим
-          !element.querySelector('.twitter-block-search-btn')) { // кнопка еще не добавлена
-        
-        const text = element.textContent.trim();
-        const match = text.match(/@(\w+)\s+has blocked you/);
-        
-        if (match) {
-          tbsLog('Found blocked text in element', { selector, text });
-          targetElement = element;
-          break;
-        }
-      }
-    }
-    if (targetElement) break;
-  }
+  const target = findBlockMessageTarget();
   
   // Если нашли подходящий элемент, добавляем кнопку
-  if (targetElement) {
-    const text = targetElement.textContent;
-    const match = text.match(/@(\w+)\s+has blocked you/);
-    
-    if (match) {
-      const blockedUsername = match[1];
-      const currentUser = getCurrentUsername();
-      
-      if (!currentUser) {
-        tbsWarn('Cannot determine current user, skipping button');
-        return;
-      }
-      
-      // Создаем кнопку с временной иконкой загрузки
-      const searchButton = document.createElement('button');
-      searchButton.className = 'twitter-block-search-btn loading';
-      searchButton.innerHTML = `<span style="font-size: 12px;">⏳</span>`;
-      searchButton.title = 'Проверяем наличие переписки...';
-      searchButton.disabled = true;
-      searchButton.dataset.blockedUsername = blockedUsername;
-      searchButton.dataset.currentUsername = currentUser;
-      
-      // ВАЖНО: Добавляем обработчик клика сразу, чтобы он работал всегда
-      searchButton.addEventListener('click', handleSearchClick);
-      
-      // Добавляем кнопку сразу
-      const statusDot = createStatusDot();
+  if (target) {
+    const targetElement = target.targetElement;
+    const blockedUsername = target.blockedUsername;
+    const currentUser = getCurrentUsername();
 
-      targetElement.style.display = 'inline-flex';
-      targetElement.style.alignItems = 'center';
-      targetElement.style.gap = '8px';
-      targetElement.appendChild(searchButton);
-      targetElement.appendChild(statusDot);
-      
-      // Просто показываем лупу - проверка результатов поиска технически невозможна
-      searchButton.className = 'twitter-block-search-btn';
-      searchButton.disabled = false;
-      searchButton.innerHTML = getSearchIcon();
-      searchButton.title = `Найти переписку между @${currentUser} и @${blockedUsername}`;
-      tbsLog('Search button added for @' + blockedUsername);
-
-      // Фоновая проверка: есть ли результаты поиска
-      checkSearchResults(currentUser, blockedUsername, statusDot);
+    if (!currentUser) {
+      tbsWarn('Cannot determine current user, skipping button');
+      return;
     }
+
+    // Создаем кнопку с временной иконкой загрузки
+    const searchButton = document.createElement('button');
+    searchButton.className = 'twitter-block-search-btn loading';
+    searchButton.innerHTML = `<span style="font-size: 12px;">⏳</span>`;
+    searchButton.title = 'Проверяем наличие переписки...';
+    searchButton.disabled = true;
+    searchButton.dataset.blockedUsername = blockedUsername;
+    searchButton.dataset.currentUsername = currentUser;
+
+    // ВАЖНО: Добавляем обработчик клика сразу, чтобы он работал всегда
+    searchButton.addEventListener('click', handleSearchClick);
+
+    // Добавляем кнопку сразу
+    const statusDot = createStatusDot();
+
+    targetElement.classList.add('twitter-block-search-anchor');
+    targetElement.appendChild(searchButton);
+    targetElement.appendChild(statusDot);
+
+    // Просто показываем лупу - проверка результатов поиска технически невозможна
+    searchButton.className = 'twitter-block-search-btn';
+    searchButton.disabled = false;
+    searchButton.innerHTML = getSearchIcon();
+    searchButton.title = `Найти переписку между @${currentUser} и @${blockedUsername}`;
+    tbsLog('Search button added for @' + blockedUsername);
+
+    // Фоновая проверка: есть ли результаты поиска
+    checkSearchResults(currentUser, blockedUsername, statusDot);
   }
 }
 
@@ -235,6 +303,7 @@ function getCurrentUsername() {
   // Приоритетные селекторы для определения вашего аккаунта
   const selectors = [
     '[data-testid="SideNav_AccountSwitcher_Button"] img[alt*="@"]',
+    '[data-testid^="UserAvatar-Container-"] img[alt*="@"]',
     '[data-testid="UserAvatar-Container"] img[alt*="@"]',
     'nav a[href*="/profile"]',
     '[data-testid="AppTabBar_Profile_Link"]',
@@ -262,6 +331,7 @@ function getCurrentUsername() {
   // Fallback селекторы
   const fallbackSelectors = [
     '[data-testid="SideNav_AccountSwitcher_Button"] img',
+    '[data-testid^="UserAvatar-Container-"] img',
     '[data-testid="UserAvatar-Container"] img',
     'a[href*="/profile"] img[alt*="@"]',
     '[data-testid="UserName"] span'
@@ -285,6 +355,15 @@ function getCurrentUsername() {
 function extractUsernameFromElement(selector) {
   const element = document.querySelector(selector);
   if (!element) return null;
+
+  // Проверяем data-testid вида UserAvatar-Container-username
+  const testId = element.getAttribute && element.getAttribute('data-testid');
+  if (testId && testId.startsWith('UserAvatar-Container-')) {
+    const username = testId.replace('UserAvatar-Container-', '');
+    if (isValidUsername(username)) {
+      return username;
+    }
+  }
   
   // Проверяем alt атрибут
   if (element.alt && element.alt.includes('@')) {
@@ -320,7 +399,7 @@ function isSystemPage(pageName) {
   const systemPages = [
     'home', 'explore', 'search', 'notifications', 
     'messages', 'settings', 'bookmarks', 'lists',
-    'profile', 'compose', 'i', 'intent'
+    'profile', 'compose', 'i', 'intent', 'chat'
   ];
   return systemPages.includes(pageName.toLowerCase());
 }
@@ -354,9 +433,14 @@ function observeDOM() {
       }
       
       return Array.from(mutation.addedNodes).some(node => {
-        return node.nodeType === Node.ELEMENT_NODE && 
-               node.textContent && 
-               node.textContent.includes('has blocked you');
+        if (node.nodeType !== Node.ELEMENT_NODE) return false;
+        if (hasBlockMessageMarker(node.textContent || '')) return true;
+
+        const element = node;
+        return Boolean(
+          element.querySelector?.('[data-testid="inlinePrompt"]') ||
+          element.querySelector?.('[data-testid="cellInnerDiv"]')
+        );
       });
     });
     
